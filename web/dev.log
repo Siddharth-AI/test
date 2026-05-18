@@ -1,0 +1,14 @@
+
+> rgpv-exam-insights-web@0.1.0 dev
+> next dev --turbopack
+
+[32m✔[0m [33mConsole Ninja[0m extension is connected to [33mNext.js[0m, see [36mhttps://tinyurl.com/2vt8jxzw[0m
+⚠ Port 3000 is in use by an unknown process, using available port 3004 instead.
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3004
+- Network:       http://192.168.0.102:3004
+- Environments: .env.local
+✓ Ready in 5.4s
+⚠ Slow filesystem detected. The benchmark took 429ms. If D:\job\apoliums\patel_workshop\web\.next/dev is a network drive, consider moving it to a local folder.
+See more: https://nextjs.org/docs/app/guides/local-development
+
