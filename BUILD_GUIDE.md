@@ -1,19 +1,43 @@
 # RGPV Exam Insights — Build Guide
 
-End-to-end prompts. Copy-paste in order. Each step = one prompt to Claude Code.
+End-to-end prompts. Copy each fenced block into Claude Code in order. Do **not** skip steps. Do **not** merge steps. Verify the **Acceptance gate** at the end of every step before moving to the next.
+
+This guide is a from-scratch replay. Follow it on an empty folder and you ship the same deployed app.
+
+---
 
 ## Stack
 
-- **Frontend + API:** Next.js 16 (App Router, Turbopack, TypeScript) + React 19 + Tailwind v3 + GSAP + three.js (@react-three/fiber + drei) + Framer Motion + Recharts
+- **Frontend + API:** Next.js 16 (App Router, Turbopack, TypeScript) + React 19 + Tailwind v3 + GSAP + three.js (`@react-three/fiber` + `@react-three/drei`) + Framer Motion + Recharts
 - **Database:** Supabase Postgres — `tsvector` FTS + GIN index, RLS disabled
 - **Deploy:** Vercel only (Next.js pages + `/api/*` route handlers in one deploy)
-- **Ingestion (LOCAL ONLY — does not run on Vercel):** Python 3.10+ with PyMuPDF + rapidocr-onnxruntime + scikit-learn + supabase-py
+- **Ingestion (LOCAL ONLY — does not run on Vercel):** Python 3.10+ — PyMuPDF, rapidocr-onnxruntime, scikit-learn, supabase-py
 
-> **Why ingest is local:** Vercel functions run Node, max ~10 s, no persistent disk. Scraper hits 1500+ URLs over minutes; extractor OCRs scanned PDFs at ~10 s/page; loader writes a 5 MB SQLite cache. None of that fits Vercel. Ingest runs on your laptop, pushes results to Supabase via service-role key, then Vercel reads Supabase directly.
+> **Why ingest is local:** Vercel functions run Node, max ~10 s, no persistent disk. The scraper hits 1500+ URLs over minutes, the extractor OCRs scans at ~10 s/page, and the loader writes a 5 MB SQLite cache. None of that fits a serverless function. Ingest runs on your laptop, pushes results to Supabase via the service-role key, then Vercel reads Supabase directly.
+
+---
+
+## Prerequisites (before Step 0.0)
+
+Install once on your machine:
+
+- **Python 3.10+** + `pip` — for ingest (`python --version`)
+- **Node 20+** + `npm` — for Next.js (`node --version`)
+- **Git** — for source control
+- **GitHub CLI** (`gh`) — optional, but the easiest way to create the GitHub repo
+- **Claude Code** — the agent that will execute every fenced prompt below
+- Accounts (free tier is fine for all three):
+  - **Supabase** — https://supabase.com (you'll need one project)
+  - **Vercel** — https://vercel.com (auto-deploys from GitHub)
+  - **GitHub** — to host the repo
+
+Empty working folder. `cd` into it. Open Claude Code there.
 
 ---
 
 ## Step 0.0 — Generate `SPEC.md` from PDF
+
+Drop `SPEC.pdf` into the folder, then paste:
 
 ````
 Read SPEC.pdf in this directory. Convert it to clean GitHub-flavored markdown and save as SPEC.md in repo root.
@@ -28,7 +52,7 @@ Rules:
 - After writing, print the first 40 lines so I can verify.
 ````
 
-Sanity check: 14 numbered sections, one ```sql block, one ``` folder tree, two markdown tables.
+**Acceptance gate:** `SPEC.md` has 14 numbered sections, one ```sql block, one ``` folder tree, two markdown tables.
 
 ---
 
@@ -65,6 +89,8 @@ DISCIPLINE:
 - Reference SPEC.md acceptance criteria in every PR description.
 ```
 
+**Acceptance gate:** `CLAUDE.md` exists at repo root.
+
 ---
 
 ## Step 0.2 — Scaffold
@@ -78,13 +104,15 @@ Read SPEC.md and CLAUDE.md. Create:
 - web/ folder (Next.js)
 - data/raw/.gitkeep + data/processed/.gitkeep
 - requirements.txt: pymupdf, requests, beautifulsoup4, scikit-learn, pytest, rapidocr-onnxruntime, supabase
-- web/package.json: next@latest (16+), react@latest (19+), react-dom@latest, typescript, tailwindcss@^3.4 (NOT v4 — different PostCSS), postcss, autoprefixer, gsap, three, @react-three/fiber@latest, @react-three/drei@latest, framer-motion, lucide-react, recharts, @supabase/supabase-js, @types/*
-- .gitignore: python + node + .env* + data/raw/*+data/processed/* (keep .gitkeep) + *.sqlite +.next/ + node_modules/
-- README.md skeleton
+- web/package.json: next@latest (16+), react@latest (19+), react-dom@latest, typescript, tailwindcss@^3.4 (NOT v4 — different PostCSS), postcss, autoprefixer, gsap, three, @react-three/fiber@latest, @react-three/drei@latest, framer-motion, lucide-react, recharts, @supabase/supabase-js, @types/node @types/react @types/react-dom @types/three
+- .gitignore: python + node + .env* + .env.local + data/raw/* + data/processed/* (keep .gitkeep) + *.sqlite + *.db + .next/ + node_modules/
+- README.md skeleton (empty sections)
 - .env.example: NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co + SUPABASE_SERVICE_ROLE_KEY=
 
 Show tree first. Then create. No logic yet.
 ```
+
+**Acceptance gate:** `tree -L 2` shows folder layout. `cat .gitignore` shows `.env.local` excluded.
 
 ---
 
@@ -106,9 +134,11 @@ No code. Reference SPEC by section number. Print milestone table.
 Wait for approval before Phase 1.
 ```
 
+**Acceptance gate:** Read the milestone table out loud. Approve before continuing.
+
 ---
 
-## Phase 1 — Scrape PDFs (local)
+## Phase 1 — Scrape PDFs (local, ~45 min)
 
 ### Step 1.1 — Inspect rgpvonline.com
 
@@ -128,31 +158,38 @@ Report:
 Output one markdown table covering every subject: branch | semester | subject_code | subject_name | url_slug. Expect ~98 entries.
 ```
 
+**Acceptance gate:** Table has ~98 rows. URL pattern documented as `/be/<slug>-<session>-<year>.pdf`.
+
+> **Teacher note:** Always look at the actual website structure before prompting. Saves an hour of regex on the wrong URL shape.
+
 ### Step 1.2 — Write scraper
 
 ```
-Based on inspection, write src/scraper.py:
+Based on the inspection above, write src/scraper.py:
 - SUBJECTS dict: code → (slug, name, semester, branch). branch ∈ {CSE, IT, EC, ME}.
+- pip install requests
 - download_subject(code, years=range(2018, 2026))
 - Saves data/raw/<code>/<year>-<SESSION>.pdf (SESSION upper-case)
 - URL: f"{BASE}/be/{slug}-{session.lower()}-{year}.pdf"
 - Idempotent: skip if file exists and size > 0
-- Polite: 0.4 s sleep, custom User-Agent
+- Polite: 0.4 s sleep, custom User-Agent ("PCST-Workshop-Bot/0.1")
 - Log OK / MISS / FAIL with status code
 - CLI: python -m src.scraper --subject CS-502 | python -m src.scraper --all [--year-from --year-to]
 
-Show plan first. Verify CS-502 (expect ~3-4 hits of 18 attempts). Then --all in background. Expect ~250-300 PDFs total.
+Show plan first. Verify on CS-502 only (expect ~3–4 hits of 18 attempts). Then run --all in background. Expect ~250–300 PDFs total.
 ```
+
+**Acceptance gate:** `ls data/raw/CS-502/` shows ≥1 PDF. `python -m src.scraper --subject CS-502` re-run prints `SKIP` (idempotent). `find data/raw -name "*.pdf" | wc -l` ≥ 30 (SPEC §10.1).
 
 ---
 
-## Phase 2 — Extract + Parse (local)
+## Phase 2 — Extract + Parse (local, ~75 min)
 
 ### Step 2.1 — Extractor with OCR fallback
 
 ```
 Write src/extractor.py:
-- extract_text(pdf_path) → str using PyMuPDF
+- extract_text(pdf_path) → str using PyMuPDF (fitz)
 - Layout-aware: page.get_text("blocks") sorted by x-bucket then y (handles two-column papers)
 - Many RGPV PDFs from 2022+ are scanned images. Add OCR fallback:
   when a page yields <50 chars, render at 200 DPI and run rapidocr-onnxruntime (pure-python, no tesseract binary).
@@ -160,6 +197,8 @@ Write src/extractor.py:
 
 Write tests/test_extractor.py: text PDF returns non-empty, missing file raises FileNotFoundError, synth-scanned PDF triggers OCR. Run pytest.
 ```
+
+**Acceptance gate:** `pytest tests/test_extractor.py -v` → 3 passed.
 
 ### Step 2.2 — Parser
 
@@ -175,7 +214,7 @@ Then write src/parser.py:
 - Question dataclass: unit_number, question_number, marks, question_text
 - Separate regexes for RE_MAIN (allows inline body), RE_SUB, RE_BARE_MARKS, RE_TRAILING_MARKS, RE_PAGE_NUM
 - Track last_main_no so sub-headers after a finalize restore parent number
-- Page-number regex MUST require literal brackets — bare `7` is marks
+- Page-number regex MUST require literal brackets — bare `7` is marks, not a page number
 - Hindi-junk filter: token-level garble check (not unicode) — drop line if ≥50% tokens contain $ ¶ § | ° « ñ © ® < > or are mostly `?`. English-letter ratio alone misclassifies RGPV's font-encoded Devanagari as English.
 - _clean_text strips garble tokens
 - When all parsed questions have marks=None, infer per-main from "Maximum Marks : N" + "Attempt any K" → per_main = N/K
@@ -183,8 +222,12 @@ Then write src/parser.py:
 - Log skipped lines to logs/parser.log; never raise
 - Target: ≥80% extraction rate (SPEC §5.3)
 
-Write tests/test_parser.py: golden samples (bare-marks paper, inferred-marks paper, garbage input), helper tests (clean, hindi, unit map, marks inference). Run pytest. Report per-paper parse rate on real CS-502 PDFs.
+Write tests/test_parser.py: golden samples (bare-marks paper, inferred-marks paper, garbage input), helper tests (clean, hindi, unit map, marks inference), one real-PDF smoke test on data/raw/CS-502/. Run pytest. Report per-paper parse rate on real CS-502 PDFs.
 ```
+
+**Acceptance gate:** `pytest tests/test_parser.py -v` → all green. Per-paper print shows ≥8 questions for at least 3 of 4 CS-502 papers.
+
+> **Teacher note:** First parser works on the sample you showed it and breaks on everything else. Real engineering is the iteration loop in Step 2.3.
 
 ### Step 2.3 — Iterate
 
@@ -193,9 +236,21 @@ Run parser on every CS-502 PDF. Print per-paper Q count + with_marks + units.
 If any paper <80%, show raw vs parsed side-by-side, propose regex fix, wait for approval.
 ```
 
+**Acceptance gate:** every paper hits ≥80%. If not, fix regex and re-run before moving on.
+
 ---
 
-## Phase 3 — Storage (Supabase) (45 min)
+## Phase 3 — Storage (Supabase, ~45 min)
+
+### Step 3.0 — Create Supabase project (manual, 2 min — no Claude needed)
+
+1. https://supabase.com → **New project**. Region close to you. Wait ~30 s for provisioning.
+2. Project Settings → **API** → copy:
+   - **Project URL** (`https://<ref>.supabase.co`)
+   - **service_role** key under "Project API keys" (NOT the anon key)
+3. Save both in a scratch note — you'll paste them as env vars next.
+
+**Acceptance gate:** dashboard shows your project. You have the URL + service-role key in clipboard reach.
 
 ### Step 3.1 — Schema
 
@@ -216,28 +271,33 @@ ALTER TABLE … DISABLE ROW LEVEL SECURITY for all three tables.
 VIEW subject_stats: per-subject papers + questions counts.
 VIEW branch_stats: per-branch subjects + papers + questions counts.
 
-Tell user: open Supabase dashboard → SQL editor → paste schema → Run.
+After writing, print exact instructions for me to apply: Supabase dashboard → SQL editor → New query → paste contents of supabase/schema.sql → Run.
 ```
+
+**Acceptance gate:** in Supabase Table Editor you see `papers`, `questions`, `subject_frequencies`, and views `subject_stats`, `branch_stats`. RLS toggle = OFF on all three tables.
 
 ### Step 3.2 — Local SQLite cache + loader
 
 ```
-Cache layer so reruns don't re-extract every PDF.
+This is the intermediate cache so reruns don't re-extract every PDF.
 
 Write src/db.py:
 - connect(path, check_same_thread=False), row_factory=Row, PRAGMA foreign_keys ON
-- init_db with SQLite mirror of Supabase schema (FTS5 + triggers — fine for SQLite, just a buffer)
+- init_db with SQLite mirror of Supabase schema (FTS5 + sync triggers — fine for SQLite, just a buffer)
 - insert_paper idempotent on UNIQUE(subject_code, year, session) — wipes old questions on rerun
 - insert_questions bulk executemany
+- counts(conn) helper
 
 Write src/load.py CLI:
 - Walks data/raw/, runs extractor → parser, derives meta from path + SUBJECTS
 - Inserts via db.py
 - Reports loaded / total_questions / skipped (with reason)
 
-Write tests/test_db.py: schema columns match SPEC §5.4, insert+query roundtrip, idempotent rerun, FTS5 match, FTS rebuild.
-Run pytest. Run loader. Expect ~150-200 papers + ~1500-2500 questions.
+Write tests/test_db.py: schema columns, insert+query roundtrip, idempotent rerun, FTS5 match, FTS rebuild.
+Run pytest. Run loader. Expect ~150–200 papers + ~1500–2500 questions (depends on OCR success).
 ```
+
+**Acceptance gate:** `pytest tests/test_db.py -v` → 5 passed. `python -m src.load` finishes with `papers loaded ≥ 30` and `questions inserted ≥ 500`.
 
 ### Step 3.3 — Upload to Supabase
 
@@ -252,22 +312,26 @@ Write src/upload_supabase.py:
 - Compute per-subject TF-IDF with sklearn (stop_words='english', ngram_range=(1,2), max_features=500)
 - Insert top-20 terms per subject into subject_frequencies (rank, term, score)
 
-Run: NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... python -m src.upload_supabase
-Print final Supabase counts.
+Tell me the exact one-line command to run:
+  NEXT_PUBLIC_SUPABASE_URL=<paste> SUPABASE_SERVICE_ROLE_KEY=<paste> python -m src.upload_supabase
+
+Print final Supabase counts after the run.
 ```
+
+**Acceptance gate:** in Supabase Table Editor, `papers` ≥ 30 rows, `questions` ≥ 500 rows, `subject_frequencies` ≥ 100 rows.
 
 ---
 
-## Phase 4 — Frontend + API (Next.js) (90 min)
+## Phase 4 — Frontend + API (Next.js, ~90 min)
 
 ### Step 4.1 — Next.js API routes (Supabase queries)
 
 ```
-Install @supabase/supabase-js in web/.
+cd web/. Install @supabase/supabase-js.
 
 Create web/lib/supabase.ts:
 - FIRST LINE: import "server-only"; (makes accidental client import a build-time error)
-- Singleton createClient(NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+- Singleton createClient(NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
 - Helpers exported:
     cleanText(text): drops tokens containing $ ¶ § | ° « ñ © ® < > or majority non-ASCII letters
     sanitizeFts(q): strip metachars, join 2+-char tokens with " | " for OR semantics
@@ -287,8 +351,11 @@ Each route: `export const dynamic = "force-dynamic"`.
 For /search and /frequency, soft-fail (return [] on Supabase error) — malformed FTS shouldn't 500.
 Run cleanText on every returned question_text.
 
-Run npm run build. curl every endpoint against your Supabase project.
+Create web/.env.local with NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY.
+Run npm install, npm run build, then npm run dev. curl every endpoint.
 ```
+
+**Acceptance gate:** `npm run build` shows 8 `ƒ /api/*` routes. `curl http://localhost:3000/api/health` → `{"status":"ok"}`. `curl /api/stats` returns real counts.
 
 ### Step 4.2 — Frontend scaffold + theme
 
@@ -306,8 +373,10 @@ In web/:
 - components/ui/: GlassCard, GradientButton (Link or button via prop), Input, Select, Tag, NavBar (sticky, active-route highlight via usePathname)
 - lib/api.ts: same-origin fetcher → relative "/api" (no NEXT_PUBLIC_API_URL needed; no CORS)
 
-Build. Screenshot homepage.
+Build. Open http://localhost:3000 — confirm theme renders.
 ```
+
+**Acceptance gate:** `npm run build` clean. Homepage loads with dark glass theme and Instrument Serif headline.
 
 ### Step 4.3 — Hero + GSAP + home
 
@@ -345,6 +414,8 @@ Use stale-flag pattern (let active = true ; cleanup sets false) instead of Abort
 Install three @react-three/fiber @react-three/drei gsap framer-motion lucide-react recharts. Build. Browser-verify hero spins, stats count up.
 ```
 
+**Acceptance gate:** browser shows spinning distorted icosahedron, four stat tiles count up from 0, four branch tiles navigate.
+
 ### Step 4.4 — Search page
 
 ```
@@ -358,6 +429,8 @@ Create app/search/page.tsx (client, page export wrapped in <Suspense>):
 
 Build. Verify clicking a home chip lands pre-populated. Single-word query matches OR-style.
 ```
+
+**Acceptance gate:** `/search?q=BCNF` returns ≥1 DBMS result. Filters by unit + marks narrow results. Debounce visible — no spam on every keystroke.
 
 ### Step 4.5 — Frequency view
 
@@ -373,6 +446,8 @@ Create app/insights/[subject]/page.tsx:
 Data from /api/frequency. Build. Verify nav from chart + word cloud.
 ```
 
+**Acceptance gate:** `/insights/CS-502` renders a bar chart with ≥10 terms. Click a bar → lands on `/search?q=<term>&subject=CS-502` with pre-filtered results.
+
 ### Step 4.6 — Polish
 
 ```
@@ -384,51 +459,100 @@ Across pages:
 - Screenshot every page, tick SPEC §10 checklist
 ```
 
----
-
-## Phase 5 — Deploy (Vercel)
-
-```
-Vercel project root = web/. Two env vars only:
-  NEXT_PUBLIC_SUPABASE_URL
-  SUPABASE_SERVICE_ROLE_KEY (do NOT prefix with NEXT_PUBLIC)
-
-CLI:
-  cd web
-  npm i -g vercel
-  vercel link
-  vercel env add NEXT_PUBLIC_SUPABASE_URL production
-  vercel env add SUPABASE_SERVICE_ROLE_KEY production
-  vercel --prod
-
-Or dashboard: import GitHub repo → Root Directory = web/ → paste env vars → Deploy.
-
-Verify: https://<app>.vercel.app/api/health → {"status":"ok"}.
-
-NOTE: ingest (scraper, extractor, parser, upload_supabase) runs LOCALLY only. Vercel deploys web/ only. To refresh data, re-run the local ingest pipeline and let upload_supabase push to Supabase.
-
-For automated refresh later: GitHub Actions cron running the same Python pipeline on a schedule, with the two Supabase env vars set in repo secrets.
-```
+**Acceptance gate:** Lighthouse mobile perf ≥85. 404 + error pages on-theme. All 6 SPEC §10 boxes ticked except deployment URL (Phase 5).
 
 ---
 
-## Final README
+## Phase 5 — Ship to GitHub + Vercel
+
+This phase has no Claude prompt — run these commands yourself.
+
+### Step 5.1 — Initialise git + first commit
+
+```bash
+cd <repo root>
+git init -b main
+git add .
+git status        # MUST verify: no .env.local, no node_modules/, no data/raw/*.pdf, no *.db staged
+git commit -m "Initial commit: RGPV Exam Insights (Next.js + Supabase + Vercel)"
+```
+
+### Step 5.2 — Push to GitHub
+
+**Easy path (gh CLI):**
+```bash
+gh auth login          # browser opens, one-time
+gh repo create rgpv-exam-insights --public --source=. --remote=origin --push
+```
+
+**Manual path:**
+1. github.com → **New repository** → name `rgpv-exam-insights` → **do not** initialise with README/gitignore → Create.
+2. ```bash
+   git remote add origin https://github.com/<your-username>/rgpv-exam-insights.git
+   git push -u origin main
+   ```
+
+### Step 5.3 — Deploy on Vercel (dashboard, recommended)
+
+1. https://vercel.com → log in with GitHub.
+2. **Add New → Project** → import `rgpv-exam-insights`.
+3. **Configure Project** screen:
+   - **Root Directory** → click **Edit** → pick `web` → Continue.
+   - Framework Preset auto-detects Next.js ✓ (leave defaults).
+4. **Environment Variables** — add both, all three scopes (Production + Preview + Development):
+   - `NEXT_PUBLIC_SUPABASE_URL` = your Supabase project URL
+   - `SUPABASE_SERVICE_ROLE_KEY` = your Supabase service-role key (do NOT prefix with NEXT_PUBLIC)
+5. **Deploy**. ~2 min.
+
+### Step 5.4 — Smoke test live deploy
+
+```bash
+curl https://<your-app>.vercel.app/api/health
+# expect {"status":"ok"}
+
+curl https://<your-app>.vercel.app/api/stats
+# expect {"papers":N,"questions":N,"subjects":N,...}
+
+curl "https://<your-app>.vercel.app/api/search?q=BCNF&limit=2"
+# expect array of question rows
+```
+
+Browser checklist on `https://<your-app>.vercel.app`:
+
+- Hero blob spins, stats count up from 0
+- `/search` → type "BCNF" → results appear, no console errors
+- Click a result's subject → `/insights/<code>` → frequency chart loads <2 s
+- Click any bar → returns to `/search` with `?q=<term>&subject=<code>` pre-populated
+
+**Acceptance gate:** all four browser checks pass. Last SPEC §10 box ticked.
+
+### Step 5.5 — Ongoing workflow
+
+- **Code change:** edit → `git push` → Vercel auto-deploys.
+- **Data refresh:** locally `python -m src.scraper --all && python -m src.load && python -m src.upload_supabase` → Supabase updated → Vercel reads new data live (no redeploy needed).
+- **Automated refresh later:** GitHub Actions cron running the same Python pipeline weekly, with Supabase env vars set in repo Settings → Secrets.
+
+---
+
+## Step 6 — Final README
 
 ```
 Write README.md:
 - Hero screenshot
 - 1-paragraph what + why
-- Live URL placeholder
-- Stack table (Next.js 16 + Supabase + Vercel)
+- Live URL (paste from Vercel)
+- Stack table (Next.js 16 + Supabase + Vercel + Python ingest)
 - Local setup: ingest pipeline + npm run dev
 - Ingestion runbook (scraper → load → upload_supabase)
 - Env vars table
-- SPEC §10 acceptance checklist
+- SPEC §10 acceptance checklist (all six boxes ticked)
 - Notes (robots.txt, OCR latency, RLS off)
 - Credits
 
 Verify GitHub preview renders.
 ```
+
+**Acceptance gate:** README on GitHub renders the live URL, stack table, and ticked checklist.
 
 ---
 
@@ -443,7 +567,7 @@ Write DEMO.md, 3-minute walkthrough:
 5. Switch to Insights — frequency chart loads
 6. Click top term → back to filtered search
 
-Practice twice. Time it.
+Practice twice. Time it. Fix anything that breaks.
 ```
 
 ---
@@ -473,6 +597,7 @@ Practice twice. Time it.
 4. **Explicitly `DISABLE ROW LEVEL SECURITY`** at end of schema.sql.
 5. **Precompute TF-IDF at upload time**, store top-20 per subject in `subject_frequencies`. Avoids shipping sklearn to Vercel.
 6. **Aggregate views** (`subject_stats`, `branch_stats`) keep API routes simple.
+7. **SQLite default `check_same_thread=True`** breaks FastAPI/Next dependency injection across threadpool workers. Pass `check_same_thread=False` in `db.connect`.
 
 ### Frontend
 
@@ -509,10 +634,27 @@ Practice twice. Time it.
 
 ---
 
+## Troubleshooting (common gotchas)
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `npm run build` → "tailwindcss as a PostCSS plugin has moved" | tailwind v4 installed | `npm i -D tailwindcss@^3.4 postcss@^8 autoprefixer@^10` |
+| `npm run dev` → "Port 3000 is in use" | another Node app | Use the auto-picked port Next reports; update env in browser bookmarks |
+| `/api/*` returns 500 with "SQLite objects created in a thread…" | (legacy SQLite path) | Set `check_same_thread=False` in `db.connect` |
+| `/api/*` returns 500 with "JSON could not be generated, 404" | Supabase schema not applied | Paste `supabase/schema.sql` in SQL editor → Run |
+| Search returns 0 hits even for words you know exist | FTS query joined with AND, or no GIN index | Use `sanitizeFts` joining with ` | ` + `type: "websearch"`; verify `idx_questions_tsv` exists |
+| Devtools Network panel shows red `(canceled)` rows | AbortController + React StrictMode double-mount | Switch to `let active = true` stale-flag pattern |
+| Hero blob renders pitch-black on first paint | Missing lights or wrong geometry detail | Add directional + point lights; bump `MeshTransmissionMaterial` shell to ≥3 subdivisions |
+| Vercel build fails with "Cannot find module for page: /_not-found" | Stale `.next/` after Next major upgrade | `rm -rf web/.next && npm run build` |
+| Vercel build fails on env var | Not set on Production scope | Vercel dashboard → Project → Settings → Environment Variables → ensure both vars across Production + Preview + Development |
+| `python -m src.upload_supabase` → "401 Unauthorized" | Used anon key, not service-role | Re-copy the **service_role** key from Supabase Project Settings → API |
+
+---
+
 ## Failure protocol
 
 1. Stop. Don't push forward.
-2. Paste error + last 20 lines of relevant code back.
+2. Paste error + last 20 lines of relevant code back into Claude Code.
 3. Ask: "Diagnose root cause. Propose fix. Don't change code yet."
 4. Approve fix → apply → re-run that step.
 
